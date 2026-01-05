@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -10,7 +10,7 @@ from os import path
 from typing import List, Optional, Set, Tuple
 
 from extract_utils.args import parse_args
-from extract_utils.extract import ExtractCtx
+from extract_utils.extract import ExtractCtx, extract_fns_type
 from extract_utils.file import File
 from extract_utils.module import (
     ExtractUtilsModule,
@@ -57,10 +57,7 @@ class ExtractUtils:
         device_module: ExtractUtilsModule,
         device_vendor_commons: List[Tuple[str] | Tuple[str, str]],
     ):
-        if device_vendor_commons is None:
-            device_vendor_commons = []
-
-        common_modules = []
+        common_modules: List[ExtractUtilsModule] = []
         for device_vendor_common in device_vendor_commons:
             device_common = device_vendor_common[0]
             if len(device_vendor_common) == 2:
@@ -95,7 +92,11 @@ class ExtractUtils:
         return cls(device_module)
 
     @classmethod
-    def import_module(cls, device, vendor) -> Optional[ExtractUtilsModule]:
+    def import_module(
+        cls,
+        device: str,
+        vendor: str,
+    ) -> Optional[ExtractUtilsModule]:
         module_name = f'{vendor}_{device}'
         module_path = path.join(
             android_root, 'device', vendor, device, 'extract-files.py'
@@ -161,7 +162,7 @@ class ExtractUtils:
             )
 
     def run(self):
-        extract_fns = {}
+        extract_fns: extract_fns_type = []
         extract_partitions: Set[str] = set()
         firmware_files: List[File] = []
         factory_files: List[File] = []
@@ -173,7 +174,7 @@ class ExtractUtils:
 
         if not self.__args.regenerate_makefiles:
             for module in self.__modules:
-                extract_fns.update(module.extract_fns)
+                extract_fns.extend(module.extract_fns)
 
                 extract_partitions.update(
                     module.get_extract_partitions(self.__args.section),

@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -12,7 +12,7 @@ import tarfile
 from concurrent.futures import ProcessPoolExecutor
 from os import path
 from tarfile import is_tarfile
-from typing import Callable, Dict, Iterable, List, Optional, Union
+from typing import Callable, Dict, Iterable, List, Optional, Set, Union
 from zipfile import ZipFile, is_zipfile
 
 from extract_utils.ext4 import EXT4_MAGIC, EXT4_MAGIC_OFFSET
@@ -69,20 +69,20 @@ class ExtractFn:
 
 
 extract_fns_type = List[ExtractFn]
-extract_fns_user_type = extract_fns_dict_type | extract_fns_type
+extract_fns_user_type = Union[extract_fns_dict_type, extract_fns_type]
 
 
 class ExtractCtx:
     def __init__(
         self,
-        extract_fns: Optional[extract_fns_user_type] = None,
+        extract_fns: Optional[extract_fns_type] = None,
         extract_partitions: Optional[List[str]] = None,
         firmware_files: Optional[List[File]] = None,
         factory_files: Optional[List[File]] = None,
-        extract_all=False,
+        extract_all: bool = False,
     ):
         if extract_fns is None:
-            extract_fns = {}
+            extract_fns = []
         if extract_partitions is None:
             extract_partitions = []
         if firmware_files is None:
@@ -113,10 +113,10 @@ def find_files(
     name: Optional[str] = None,
     regex: Optional[str] = None,
     magic: Optional[bytes] = None,
-    position=0,
+    position: int = 0,
     ext: Optional[str] = None,
 ) -> List[str]:
-    file_paths = []
+    file_paths: List[str] = []
     for file in scan_tree(input_path):
         if not file.is_file():
             continue
@@ -152,7 +152,7 @@ def find_file(
     name: Optional[str] = None,
     regex: Optional[str] = None,
     magic: Optional[bytes] = None,
-    position=0,
+    position: int = 0,
     ext: Optional[str] = None,
 ):
     file_paths = find_files(
@@ -176,7 +176,7 @@ def find_alternate_partitions(
     extract_partitions: List[str],
     found_partitions: Iterable[str],
 ):
-    new_extract_partitions = []
+    new_extract_partitions: List[str] = []
     for partition in extract_partitions:
         if partition in found_partitions:
             continue
@@ -424,11 +424,20 @@ def extract_tar(source: str, dump_dir: str):
         tar.extractall(dump_dir)
 
 
+def extract_7z(source: str, dump_dir: str):
+    import py7zr
+
+    with py7zr.SevenZipFile(source, 'r') as archive:
+        archive.extractall(dump_dir)
+
+
 def extract_image_file(source: str, dump_dir: str):
     if is_zipfile(source):
         extract_fn = extract_zip
     elif is_tarfile(source):
         extract_fn = extract_tar
+    elif source.endswith('.7z'):
+        extract_fn = extract_7z
     else:
         raise ValueError(f'Unexpected file type at {source}')
 
@@ -488,8 +497,8 @@ def extract_partition(partition: str, dump_dir: str):
         remove_file_path(ext4_path)
 
 
-def find_partitions(dump_dir: str, ctx: ExtractCtx, missing=False):
-    partitions = []
+def find_partitions(dump_dir: str, ctx: ExtractCtx, missing: bool = False):
+    partitions: List[str] = []
     for partition in ctx.extract_partitions:
         dump_partition_dir = path.join(dump_dir, partition)
 
@@ -499,8 +508,8 @@ def find_partitions(dump_dir: str, ctx: ExtractCtx, missing=False):
     return partitions
 
 
-def _find_files(dump_dir: str, files: List[File], missing=False):
-    found_files = []
+def _find_files(dump_dir: str, files: List[File], missing: bool = False):
+    found_files: List[File] = []
     for file in files:
         src_file_path = path.join(dump_dir, file.src)
         dst_file_path = path.join(dump_dir, file.dst)
@@ -512,18 +521,22 @@ def _find_files(dump_dir: str, files: List[File], missing=False):
     return found_files
 
 
-def find_firmware_files(dump_dir: str, ctx: ExtractCtx, missing=False):
+def find_firmware_files(dump_dir: str, ctx: ExtractCtx, missing: bool = False):
     return _find_files(dump_dir, ctx.firmware_files, missing)
 
 
-def find_factory_files(dump_dir: str, ctx: ExtractCtx, missing=False):
+def find_factory_files(dump_dir: str, ctx: ExtractCtx, missing: bool = False):
     return _find_files(dump_dir, ctx.factory_files, missing)
 
 
-def find_firmware_partitions(dump_dir: str, ctx: ExtractCtx, missing=False):
+def find_firmware_partitions(
+    dump_dir: str,
+    ctx: ExtractCtx,
+    missing: bool = False,
+):
     files = find_firmware_files(dump_dir, ctx, missing)
 
-    partitions = []
+    partitions: List[str] = []
     for file in files:
         partition, _ = path.splitext(file.dst)
         partitions.append(partition)
@@ -539,10 +552,10 @@ def extract_all_partitions(dump_dir: str, ctx: ExtractCtx):
     while partitions:
         with ProcessPoolExecutor() as exe:
             for partition in partitions:
-                if partition in normal_partitions:
-                    fn = extract_partition
-                else:
+                if partition in firmware_partitions:
                     fn = extract_firmware_partition
+                else:
+                    fn = extract_partition
 
                 exe.submit(fn, partition, dump_dir)
 
@@ -605,13 +618,14 @@ def create_empty_partition_dirs(dump_dir: str, ctx: ExtractCtx):
 
 
 def convert_dict_extract_fns(dict_extract_fns: extract_fns_dict_type):
-    extract_fns = []
+    extract_fns: extract_fns_type = []
     for extract_pattern, extract_fn in dict_extract_fns.items():
         if isinstance(extract_fn, list):
+            # TODO: fix typing
             extract_fns.append(
                 ExtractFn(
                     key=extract_pattern,
-                    path_fns=extract_fn,
+                    path_fns=extract_fn,  # type: ignore
                 )
             )
         else:
@@ -626,12 +640,7 @@ def convert_dict_extract_fns(dict_extract_fns: extract_fns_dict_type):
 
 
 def run_extract_fns(dump_dir: str, ctx: ExtractCtx):
-    if isinstance(ctx.extract_fns, list):
-        extract_fns = ctx.extract_fns
-    else:
-        extract_fns = convert_dict_extract_fns(ctx.extract_fns)
-
-    for value in extract_fns:
+    for value in ctx.extract_fns:
         extract_pattern = value.key
 
         found_files = find_files(dump_dir, regex=extract_pattern)
@@ -642,13 +651,13 @@ def run_extract_fns(dump_dir: str, ctx: ExtractCtx):
             continue
 
         if value.paths_fn is not None:
-            processed_files = value.paths_fn(ctx, found_files, dump_dir)
-            remove_file_paths(processed_files)
+            processed_files_list = value.paths_fn(ctx, found_files, dump_dir)
+            remove_file_paths(processed_files_list)
             continue
 
         assert value.path_fns is not None
 
-        processed_files = set()
+        processed_files: Set[str] = set()
         for file_path in found_files:
             file_name = path.basename(file_path)
             print(f'Processing {file_name}')

@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -10,9 +10,12 @@ import tempfile
 from enum import Enum
 from functools import partial
 from os import path
-from typing import Callable, Iterable, List, Optional, Set
+from typing import Any, Callable, Iterable, List, Optional, Set
 
-from extract_utils.extract import extract_fns_user_type
+from extract_utils.extract import (
+    convert_dict_extract_fns,
+    extract_fns_user_type,
+)
 from extract_utils.file import File, FileArgs, FileList
 from extract_utils.fixups import flatten_fixups
 from extract_utils.fixups_blob import (
@@ -68,6 +71,7 @@ class ProprietaryFileType(Enum):
     BLOBS = 0
     FIRMWARE = 1
     FACTORY = 2
+    VIRTUAL = 3
 
 
 fix_file_list_fn_type = Callable[[FileList], None]
@@ -80,7 +84,7 @@ pre_post_makefile_generation_fn_type = Callable[
 class ProprietaryFile:
     def __init__(
         self,
-        file_list_path: str,
+        file_list_path: Optional[str],
         vendor_rel_sub_path: str = 'proprietary',
         fix_file_list: Optional[fix_file_list_fn_type] = None,
         pre_makefile_generation_fn: Optional[
@@ -95,10 +99,11 @@ class ProprietaryFile:
         post_makefile_generation_fns: Optional[
             List[pre_post_makefile_generation_fn_type]
         ] = None,
-        kind=ProprietaryFileType.BLOBS,
+        kind: ProprietaryFileType = ProprietaryFileType.BLOBS,
     ):
+        assert file_list_path is not None or kind == ProprietaryFileType.VIRTUAL
+
         self.file_list_path = file_list_path
-        self.root_path = path.relpath(self.file_list_path, android_root)
         self.vendor_rel_sub_path = vendor_rel_sub_path
         self.file_list = FileList()
 
@@ -119,6 +124,11 @@ class ProprietaryFile:
             self.add_post_makefile_generation_fn(post_makefile_generation_fn)
 
         self.kind = kind
+
+    @property
+    def printable_path(self):
+        assert self.file_list_path is not None
+        return path.relpath(self.file_list_path, android_root)
 
     def fix_file_list(self):
         if self.__fix_file_list is not None:
@@ -146,12 +156,12 @@ class ProprietaryFile:
         return self
 
     def add_copy_files_guard(
-        self, name: str, value: str, invert=False
+        self, name: str, value: str, invert: bool = False
     ) -> ProprietaryFile:
-        def guard_begin_fn(ctx: MakefilesCtx, *args, **kwargs):
+        def guard_begin_fn(ctx: MakefilesCtx, *args: Any, **kwargs: Any):
             write_mk_guard_begin(name, value, ctx.product_mk_out, invert=invert)
 
-        def guard_end_fn(ctx: MakefilesCtx, *args, **kwargs):
+        def guard_end_fn(ctx: MakefilesCtx, *args: Any, **kwargs: Any):
             write_mk_guard_end(ctx.product_mk_out)
 
         self.add_pre_post_makefile_generation_fn(guard_begin_fn, guard_end_fn)
@@ -232,6 +242,7 @@ class ProprietaryFile:
         self.run_post_makefile_generation_fns(ctx, packages_ctx)
 
     def write_to_file(self):
+        assert self.file_list_path is not None
         self.file_list.write_to_file(self.file_list_path)
 
     def init_file_list(
@@ -245,6 +256,7 @@ class ProprietaryFile:
         )
 
     def parse(self):
+        assert self.file_list_path is not None
         self.file_list.add_from_file(self.file_list_path)
 
     def get_files(self) -> Iterable[File]:
@@ -254,13 +266,41 @@ class ProprietaryFile:
         return self.file_list.partitions
 
 
+class VirtualPropertietaryFile(ProprietaryFile):
+    def __init__(
+        self,
+        name: str,
+        file_list_lines: List[str],
+        vendor_rel_sub_path: str = 'proprietary',
+    ):
+        super().__init__(
+            None,
+            vendor_rel_sub_path,
+            None,
+            kind=ProprietaryFileType.VIRTUAL,
+        )
+
+        self.name = name
+        self.file_list_lines = file_list_lines
+
+    @property
+    def printable_path(self):
+        return self.name
+
+    def write_to_file(self):
+        pass
+
+    def parse(self):
+        self.file_list.add_from_lines(self.file_list_lines)
+
+
 class FirmwareProprietaryFile(ProprietaryFile):
     def __init__(
         self,
         file_list_path: str,
         vendor_rel_sub_path: str = 'radio',
         fix_file_list: Optional[fix_file_list_fn_type] = None,
-        kind=ProprietaryFileType.FIRMWARE,
+        kind: ProprietaryFileType = ProprietaryFileType.FIRMWARE,
     ):
         super().__init__(
             file_list_path,
@@ -293,7 +333,7 @@ class FactoryProprietaryFile(ProprietaryFile):
         file_list_path: str,
         vendor_rel_sub_path: str = 'factory',
         fix_file_list: Optional[fix_file_list_fn_type] = None,
-        kind=ProprietaryFileType.FACTORY,
+        kind: ProprietaryFileType = ProprietaryFileType.FACTORY,
     ):
         super().__init__(
             file_list_path,
@@ -337,7 +377,7 @@ class GeneratedProprietaryFile(ProprietaryFile):
         skip_file_list_name: Optional[str] = None,
         vendor_rel_sub_path: str = 'proprietary',
         fix_file_list: Optional[fix_file_list_fn_type] = None,
-        kind=ProprietaryFileType.BLOBS,
+        kind: ProprietaryFileType = ProprietaryFileType.BLOBS,
     ):
         super().__init__(
             file_list_name,
@@ -409,13 +449,14 @@ class ExtractUtilsModule:
         lib_fixups: Optional[lib_fixups_user_type] = None,
         namespace_imports: Optional[List[str]] = None,
         extract_fns: Optional[extract_fns_user_type] = None,
-        check_elf=True,
-        add_firmware_proprietary_file=False,
-        add_factory_proprietary_file=False,
-        add_generated_carriersettings_apns=False,
-        add_generated_carriersettings_file=False,
-        add_generated_carriersettings=False,
-        skip_main_proprietary_file=False,
+        check_elf: bool = True,
+        add_firmware_proprietary_file: bool = False,
+        add_factory_proprietary_file: bool = False,
+        add_generated_carriersettings_apns: bool = False,
+        add_generated_carriersettings_file: bool = False,
+        add_generated_carriersettings: bool = False,
+        proprietary_files: Optional[List[ProprietaryFile]] = None,
+        skip_main_proprietary_file: bool = False,
     ):
         self.device = device
         self.vendor = vendor
@@ -427,8 +468,13 @@ class ExtractUtilsModule:
         self.lib_fixups = flatten_fixups(lib_fixups)
 
         if extract_fns is None:
-            extract_fns = {}
-        self.extract_fns = extract_fns
+            list_extract_fns = []
+        elif isinstance(extract_fns, dict):
+            list_extract_fns = convert_dict_extract_fns(extract_fns)
+        else:
+            list_extract_fns = extract_fns
+
+        self.extract_fns = list_extract_fns
 
         self.namespace_imports = namespace_imports
         self.check_elf = check_elf
@@ -454,6 +500,10 @@ class ExtractUtilsModule:
             self.add_generated_carriersettings(extract_apns=True)
         elif add_generated_carriersettings_file:
             self.add_generated_carriersettings_file()
+
+        if proprietary_files is not None:
+            for proprietary_file in proprietary_files:
+                self.proprietary_files.append(proprietary_file)
 
         if not skip_main_proprietary_file:
             self.add_proprietary_file('proprietary-files.txt')
@@ -512,12 +562,17 @@ class ExtractUtilsModule:
         self.postprocess_fns.append(fn)
         return self
 
-    def add_rro_package(self, *args, **kwargs):
+    def add_rro_package(self, *args: Any, **kwargs: Any):
         rro_package = RuntimeResourceOverlay(*args, *kwargs)
         self.rro_packages.append(rro_package)
         return rro_package
 
-    def add_proprietary_file(self, file_list_name: str, *args, **kwargs):
+    def add_proprietary_file(
+        self,
+        file_list_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ):
         file_list_path = self.proprietary_file_path(file_list_name)
         proprietary_file = ProprietaryFile(file_list_path, *args, **kwargs)
         self.proprietary_files.append(proprietary_file)
@@ -526,8 +581,8 @@ class ExtractUtilsModule:
     def add_generated_proprietary_file(
         self,
         file_list_name: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         file_list_path = self.proprietary_file_path(file_list_name)
         proprietary_file = GeneratedProprietaryFile(
@@ -568,7 +623,7 @@ class ExtractUtilsModule:
         self.proprietary_files.append(proprietary_file)
         return proprietary_file
 
-    def add_generated_carriersettings(self, extract_apns=False):
+    def add_generated_carriersettings(self, extract_apns: bool = False):
         package_name = 'CarrierConfigOverlay'
         proprietary_file = self.add_generated_carriersettings_file()
         self.add_rro_package(
@@ -607,8 +662,8 @@ class ExtractUtilsModule:
             def add_apn_copy_fn(
                 ctx: MakefilesCtx,
                 packages_ctx: ProductPackagesCtx,
-                *args,
-                **kwargs,
+                *args: Any,
+                **kwargs: Any,
             ):
                 write_product_copy_files(
                     ctx,
@@ -694,7 +749,7 @@ class ExtractUtilsModule:
         if not kanged and not generated:
             return
 
-        print(f'Updating {proprietary_file.root_path}')
+        print(f'Updating {proprietary_file.printable_path}')
 
         proprietary_file.write_to_file()
 
@@ -716,7 +771,7 @@ class ExtractUtilsModule:
             ):
                 continue
 
-            print(f'Parsing {proprietary_file.root_path}')
+            print(f'Parsing {proprietary_file.printable_path}')
 
             proprietary_file.init_file_list(self, section)
             proprietary_file.parse()
@@ -736,7 +791,7 @@ class ExtractUtilsModule:
             ):
                 continue
 
-            print(f'Regenerating {proprietary_file.root_path}')
+            print(f'Regenerating {proprietary_file.printable_path}')
 
             proprietary_file.init_file_list(self, None)
             proprietary_file.regenerate(self, source)
@@ -950,7 +1005,7 @@ class ExtractUtilsModule:
         backup_source: Source,
         backup_dir: str,
     ):
-        if backup_source.copy_file_to_dir(file, backup_dir) is None:
+        if not backup_source.copy_file_to_dir(file, backup_dir):
             color_print(f'Failed to back up {file.dst}', color=Color.YELLOW)
             return
 
@@ -964,7 +1019,8 @@ class ExtractUtilsModule:
             printed = False
             for file in proprietary_file.file_list.pinned_files:
                 if not printed:
-                    print(f'Backing up {proprietary_file.root_path}')
+                    print(f'Backing up {proprietary_file.printable_path}')
+                    printed = True
                 self.backup_file(file, backup_source, backup_dir)
 
     def process_file(
@@ -1062,7 +1118,7 @@ class ExtractUtilsModule:
             ):
                 continue
 
-            print(f'Processing {proprietary_file.root_path}')
+            print(f'Processing {proprietary_file.printable_path}')
 
             is_firmware = proprietary_file.kind is ProprietaryFileType.FIRMWARE
             vendor_path = self.proprietary_file_vendor_path(proprietary_file)

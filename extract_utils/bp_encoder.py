@@ -1,15 +1,24 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
+from __future__ import annotations
+
 import json
 from json import JSONEncoder
-from typing import Iterator
+from typing import Any, Dict, Iterator, Optional, Sequence, Union
+
+bp_type = Union[
+    Dict[str, 'bp_type'],
+    Sequence['bp_type'],
+    str,
+    bool,
+]
 
 
 class BpJSONEncoder(JSONEncoder):
-    def __init__(self, *args, legacy=False, **kwargs):
+    def __init__(self, *args: Any, legacy: bool = False, **kwargs: Any):
         super().__init__(*args, **kwargs)
 
         self.__level = 0
@@ -18,7 +27,7 @@ class BpJSONEncoder(JSONEncoder):
         if legacy:
             self.__indent = '\t'
 
-    def __k_v_encode(self, k, v):
+    def __k_v_encode(self, k: str, v: bp_type):
         if isinstance(v, list):
             if self.__legacy:
                 if k == 'shared_libs':
@@ -33,7 +42,7 @@ class BpJSONEncoder(JSONEncoder):
 
         return self.encode(v)
 
-    def __dict_encode(self, o):
+    def __dict_encode(self, o: Dict[str, bp_type]):
         # Special encoding to not add quotes to dictionary keys
         self.__level += 1
         indent = self.indent_str
@@ -48,10 +57,10 @@ class BpJSONEncoder(JSONEncoder):
 
     def __list_encode(
         self,
-        o,
-        ending_comma=False,
-        space_on_empty=False,
-        newlines=None,
+        o: Any,
+        ending_comma: bool = False,
+        space_on_empty: bool = False,
+        newlines: Optional[bool] = None,
     ):
         if newlines is None:
             newlines = not self.__legacy
@@ -76,7 +85,7 @@ class BpJSONEncoder(JSONEncoder):
 
         return f'[\n{output_str}{self.indent_str}]'
 
-    def encode(self, o) -> str:
+    def encode(self, o: bp_type) -> str:
         if isinstance(o, dict):
             return self.__dict_encode(o)
 
@@ -89,5 +98,5 @@ class BpJSONEncoder(JSONEncoder):
     def indent_str(self) -> str:
         return self.__indent * self.__level
 
-    def iterencode(self, o, _one_shot=False) -> Iterator[str]:
+    def iterencode(self, o: bp_type, _one_shot: bool = False) -> Iterator[str]:
         return iter([self.encode(o)])

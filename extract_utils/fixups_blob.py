@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -12,7 +12,7 @@ import tempfile
 from contextlib import suppress
 from functools import partial
 from os import path
-from typing import List, Optional, Protocol
+from typing import Any, List, Optional, Protocol
 
 from extract_utils.elf import file_needs_lib
 from extract_utils.file import File
@@ -25,7 +25,18 @@ from extract_utils.tools import (
     patchelf_version_path_map,
     stripzip_path,
 )
-from extract_utils.utils import TemporaryWorkingDirectory, run_cmd
+from extract_utils.utils import (
+    Color,
+    TemporaryWorkingDirectory,
+    color_print,
+    run_cmd,
+)
+
+APKTOOL_NO_RES_ARG = '--no-res'
+APKTOOL_NO_SRC_ARG = '--no-src'
+APKTOOL_SRC_PATH_PREFIX = 'smali'
+APKTOOL_RES_PATH = 'res/'
+APKTOOL_ANDROID_MANIFEST_NAME = 'AndroidManifest.xml'
 
 
 class BlobFixupCtx:
@@ -39,15 +50,21 @@ class blob_fixup_fn_impl_type(Protocol):
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
+        *args: Any,
         tmp_dir: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ): ...
 
 
 class blob_fixup:
     def __init__(self):
-        self.__functions: List[tuple[blob_fixup_fn_impl_type, tuple, dict]] = []
+        self.__functions: List[
+            tuple[
+                blob_fixup_fn_impl_type,
+                tuple[blob_fixup_fn_impl_type],
+                dict[str, blob_fixup_fn_impl_type],
+            ]
+        ] = []
         self.__create_tmp_dir = False
 
         self.__patchelf_path = patchelf_version_path_map[
@@ -57,14 +74,18 @@ class blob_fixup:
     def call(
         self,
         fn: blob_fixup_fn_impl_type,
-        *args,
-        need_tmp_dir=True,
-        **kwargs,
+        *args: Any,
+        need_tmp_dir: bool = True,
+        **kwargs: Any,
     ) -> blob_fixup:
         self.__functions.append((fn, args, kwargs))
         if need_tmp_dir:
             self.__create_tmp_dir = True
         return self
+
+    def merge(self, other: blob_fixup):
+        self.__functions += other.__functions
+        self.__create_tmp_dir = self.__create_tmp_dir or other.__create_tmp_dir
 
     def patchelf_version(self, version: str) -> blob_fixup:
         self.__patchelf_path = patchelf_version_path_map[version]
@@ -77,8 +98,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         run_cmd(
             [
@@ -109,8 +130,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         if file_needs_lib(file_path, lib):
             return
@@ -127,8 +148,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         run_cmd([self.__patchelf_path, '--remove-needed', lib, file_path])
 
@@ -142,8 +163,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         run_cmd(
             [self.__patchelf_path, '--clear-symbol-version', symbol, file_path]
@@ -154,7 +175,12 @@ class blob_fixup:
         return self.call(impl)
 
     def fix_soname_impl(
-        self, ctx: BlobFixupCtx, file: File, file_path: str, *args, **kwargs
+        self,
+        ctx: BlobFixupCtx,
+        file: File,
+        file_path: str,
+        *args: Any,
+        **kwargs: Any,
     ):
         run_cmd(
             [self.__patchelf_path, '--set-soname', file.basename, file_path]
@@ -171,7 +197,7 @@ class blob_fixup:
 
         assert path.isdir(patches_path)
 
-        patches = []
+        patches: List[str] = []
         for f in os.scandir(patches_path):
             if f.name.endswith('.patch'):
                 patches.append(f.path)
@@ -180,39 +206,116 @@ class blob_fixup:
 
         return patches
 
+    def __get_patch_affected_files(self, patch: str) -> List[str]:
+        output = run_cmd(
+            ['git', '--work-tree', os.devnull, 'apply', '--numstat', patch]
+        )
+
+        files: List[str] = []
+        for line in output.strip().splitlines():
+            parts = line.split('\t')
+            if len(parts) != 3:
+                raise ValueError(f'Invalid numstat line {line}')
+
+            _, _, path = parts
+            files.append(path)
+
+        return files
+
+    def __get_patches_affected_files(self, patches: List[str]) -> List[str]:
+        affected_files: List[str] = []
+        for patch in patches:
+            affected_files += self.__get_patch_affected_files(patch)
+        return affected_files
+
+    def __get_apktool_unpack_args(
+        self,
+        ctx: BlobFixupCtx,
+        patches_path: str,
+    ) -> List[str]:
+        patches = self.__get_patches(ctx, patches_path)
+        affected_files = self.__get_patches_affected_files(patches)
+
+        decode_res = False
+        decode_src = False
+        decode_manifest = False
+        for affected_file in affected_files:
+            if affected_file.startswith(APKTOOL_RES_PATH):
+                decode_res = True
+
+            if affected_file.startswith(APKTOOL_SRC_PATH_PREFIX):
+                decode_src = True
+
+            if affected_file == APKTOOL_ANDROID_MANIFEST_NAME:
+                decode_manifest = True
+
+        unpack_args: List[str] = []
+        if not decode_res and not decode_manifest:
+            unpack_args.append(APKTOOL_NO_RES_ARG)
+
+        if not decode_src:
+            unpack_args.append(APKTOOL_NO_SRC_ARG)
+
+        return unpack_args
+
     def patch_impl(
         self,
         patches_path: str,
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        tmp_dir=None,
-        **kwargs,
+        *args: Any,
+        tmp_dir: Optional[str] = None,
+        **kwargs: Any,
     ):
         patches = self.__get_patches(ctx, patches_path)
         assert tmp_dir is not None
+
+        def git_add_files(files: List[str]):
+            run_cmd(['git', 'add'] + files)
 
         # Try to apply the changes in reverse, so that they apply cleanly
         # forward
         with TemporaryWorkingDirectory(tmp_dir):
             run_cmd(['git', 'init'])
-            run_cmd(['git', 'add', '.'])
+            all_files = list(
+                filter(
+                    os.path.exists, self.__get_patches_affected_files(patches)
+                )
+            )
+            git_add_files(all_files)
             run_cmd(['git', 'commit', '-m', 'Initial commit'])
 
-            with suppress(Exception):
-                run_cmd(
-                    [
-                        'git',
-                        'apply',
-                        '--reverse',
-                        '--check',
-                    ]
-                    + patches[::-1]
-                )
-                return
+            for patch in patches[::-1]:
+                with suppress(Exception):
+                    run_cmd(
+                        [
+                            'git',
+                            'apply',
+                            '--verbose',
+                            '--reverse',
+                            patch,
+                        ]
+                    )
+                    patch_files = self.__get_patch_affected_files(patch)
+                    git_add_files(patch_files)
+                    run_cmd(['git', 'commit', '-m', f'Revert: "{patch}"'])
 
-            run_cmd(['git', 'apply'] + patches)
+            for patch in patches:
+                try:
+                    run_cmd(['git', 'apply', '--reject', patch])
+                    patch_files = self.__get_patch_affected_files(patch)
+                    git_add_files(patch_files)
+                    run_cmd(['git', 'commit', '-m', f'Apply: "{patch}"'])
+                except ValueError as e:
+                    color_print(
+                        f'Failed to apply patch {patch}',
+                        color=Color.RED,
+                    )
+                    color_print('Git history:', color=Color.RED)
+                    output = run_cmd(['git', 'log'])
+                    print(output)
+                    raise e
 
     def patch_dir(self, patches_path: str) -> blob_fixup:
         impl = partial(self.patch_impl, patches_path)
@@ -223,9 +326,9 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        tmp_dir=None,
-        **kwargs,
+        *args: Any,
+        tmp_dir: Optional[str] = None,
+        **kwargs: Any,
     ):
         assert tmp_dir is not None
         shutil.copy(file_path, tmp_dir)
@@ -238,9 +341,9 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        tmp_dir=None,
-        **kwargs,
+        *args: Any,
+        tmp_dir: Optional[str] = None,
+        **kwargs: Any,
     ):
         assert tmp_dir is not None
         tmp_file_path = path.join(tmp_dir, file.basename)
@@ -257,15 +360,17 @@ class blob_fixup:
 
     def apktool_unpack_impl(
         self,
-        unpack_args: List[str],
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        tmp_dir=None,
-        **kwargs,
+        *args: Any,
+        patches_path: str,
+        tmp_dir: Optional[str] = None,
+        **kwargs: Any,
     ):
         assert tmp_dir is not None
+
+        unpack_args = self.__get_apktool_unpack_args(ctx, patches_path)
 
         run_cmd(
             [
@@ -278,11 +383,17 @@ class blob_fixup:
                 tmp_dir,
                 '-f',
             ]
-            + unpack_args
+            + list(unpack_args)
         )
 
-    def apktool_unpack(self, unpack_args: List[str]) -> blob_fixup:
-        impl = partial(self.apktool_unpack_impl, unpack_args)
+    def apktool_unpack(
+        self,
+        patches_path: str,
+    ) -> blob_fixup:
+        impl = partial(
+            self.apktool_unpack_impl,
+            patches_path=patches_path,
+        )
         return self.call(impl)
 
     def apktool_pack_impl(
@@ -290,9 +401,9 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        tmp_dir=None,
-        **kwargs,
+        *args: Any,
+        tmp_dir: Optional[str] = None,
+        **kwargs: Any,
     ):
         assert tmp_dir is not None
 
@@ -312,7 +423,12 @@ class blob_fixup:
         return self.call(self.apktool_pack_impl, need_tmp_dir=True)
 
     def stripzip_impl(
-        self, ctx: BlobFixupCtx, file: File, file_path: str, *args, **kwargs
+        self,
+        ctx: BlobFixupCtx,
+        file: File,
+        file_path: str,
+        *args: Any,
+        **kwargs: Any,
     ):
         run_cmd(
             [
@@ -324,15 +440,30 @@ class blob_fixup:
     def stripzip(self):
         return self.call(self.stripzip_impl)
 
-    def apktool_patch(self, patches_path: str, *args) -> blob_fixup:
-        self.apktool_unpack(list(args))
+    def apktool_patch(
+        self,
+        patches_path: str,
+        *args: Any,
+    ) -> blob_fixup:
+        if args:
+            color_print(
+                'apktool_patch() no longer takes custom arguments',
+                color=Color.YELLOW,
+            )
+
+        self.apktool_unpack(patches_path)
         self.patch_dir(patches_path)
         self.apktool_pack()
         self.stripzip()
         return self
 
     def strip_debug_sections_impl(
-        self, ctx: BlobFixupCtx, file: File, file_path: str, *args, **kwargs
+        self,
+        ctx: BlobFixupCtx,
+        file: File,
+        file_path: str,
+        *args: Any,
+        **kwargs: Any,
     ):
         run_cmd(
             [
@@ -352,8 +483,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         with open(file_path, 'r', newline='', encoding='utf-8') as f:
             data = f.read()
@@ -374,8 +505,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         with open(file_path, 'rb') as f:
             data = f.read()
@@ -396,8 +527,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         with open(file_path, 'rb+') as f:
             data = f.read()
@@ -430,8 +561,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         lines: list[str] = []
         with open(file_path, 'r', newline='', encoding='utf-8') as f:
@@ -454,8 +585,8 @@ class blob_fixup:
         ctx: BlobFixupCtx,
         file: File,
         file_path: str,
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         with open(file_path, 'r+', newline='', encoding='utf-8') as f:
             data = f.read()

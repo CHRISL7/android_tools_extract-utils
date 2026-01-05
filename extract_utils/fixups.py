@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -22,18 +22,23 @@ fixups_type = Dict[str, T]
 def flatten_fixups(
     fixups: Optional[fixups_user_type[T]],
 ) -> fixups_type[T]:
-    fixups_final: fixups_type = {}
+    fixups_final: fixups_type[T] = {}
 
     if fixups is None:
         return fixups_final
 
     for entries, value in fixups.items():
         if isinstance(entries, str):
-            fixups_final[entries] = value
-        elif isinstance(entries, tuple):
-            for entry in entries:
-                fixups_final[entry] = value
+            if entries in fixups_final:
+                fixups_final[entries].merge(value)
+            else:
+                fixups_final[entries] = value
         else:
-            assert False
+            assert isinstance(entries, tuple)
+            for entry in entries:
+                if entry in fixups_final:
+                    fixups_final[entry].merge(value)
+                else:
+                    fixups_final[entry] = value
 
     return fixups_final

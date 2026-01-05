@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import struct
 from os import path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from extract_utils.extract import ExtractCtx
 
@@ -49,8 +49,8 @@ def extract_star_firmware(
     ctx: ExtractCtx,
     file_path: str,
     work_dir: str,
-    *args,
-    **kwargs,
+    *args: Any,
+    **kwargs: Any,
 ) -> str:
     with open(file_path, 'rb') as f:
         magic = get_string(f, 256)

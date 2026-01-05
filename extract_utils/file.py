@@ -1,5 +1,5 @@
 #
-# SPDX-FileCopyrightText: 2024 The LineageOS Project
+# SPDX-FileCopyrightText: The LineageOS Project
 # SPDX-License-Identifier: Apache-2.0
 #
 
@@ -10,6 +10,7 @@ import re
 from enum import Enum
 from os import path
 from typing import (
+    Any,
     Dict,
     Generator,
     Iterable,
@@ -17,7 +18,9 @@ from typing import (
     List,
     Literal,
     Optional,
+    Sequence,
     Tuple,
+    Type,
     TypeVar,
     Union,
 )
@@ -62,9 +65,10 @@ class FileArgs(str, Enum):
     SYMLINK = 'SYMLINK'
     TRYSRCFIRST = 'TRYSRCFIRST'
     FILEGROUP = 'FILEGROUP'
+    RECOVERY_AVAILABLE = 'RECOVERY_AVAILABLE'
 
 
-FILE_ARGS_TYPE_MAP = {
+FILE_ARGS_TYPE_MAP: Dict[FileArgs, Union[Type[str], Type[List[Any]], bool]] = {
     FileArgs.AB: True,
     FileArgs.CERTIFICATE: str,
     FileArgs.BOOT_JAR: True,
@@ -86,6 +90,7 @@ FILE_ARGS_TYPE_MAP = {
     FileArgs.SYMLINK: list,
     FileArgs.TRYSRCFIRST: True,
     FileArgs.FILEGROUP: list,
+    FileArgs.RECOVERY_AVAILABLE: True,
 }
 
 assert len(FileArgs) == len(FILE_ARGS_TYPE_MAP)
@@ -126,7 +131,7 @@ class File:
         self.root, self.ext = path.splitext(self.basename)
 
     def __parse_extras(self, line: str):
-        hashes = []
+        hashes: List[str] = []
 
         extras = EXTRA_REGEX.findall(line)
         for prefix, extra in extras:
@@ -167,7 +172,7 @@ class File:
         self.set_hash(file_hash)
         self.set_fixup_hash(file_fixup_hash)
 
-    def contains_path_parts(self, path_parts):
+    def contains_path_parts(self, path_parts: Sequence[str]):
         path_parts_len = len(path_parts)
         parts = self.parts
         parts_len = len(parts)
@@ -181,14 +186,10 @@ class File:
 
     def set_arg(
         self,
-        k: FileArgs | str,
+        k: str,
         v: Literal[True] | str | List[str],
     ) -> File:
-        if isinstance(k, str):
-            k = FileArgs[k]
-
-        if k not in FILE_ARGS_TYPE_MAP:
-            raise ValueError(f'Unexpected argument {k}')
+        k = FileArgs[k]
 
         k_type = FILE_ARGS_TYPE_MAP[k]
         if (
@@ -308,6 +309,10 @@ class File:
     def filegroups(self):
         return self.args.get(FileArgs.FILEGROUP)
 
+    @property
+    def recovery_available(self):
+        return self.args.get(FileArgs.RECOVERY_AVAILABLE)
+
 
 T = TypeVar('T')
 
@@ -319,7 +324,7 @@ class FileTree:
         self,
         tree: Optional[file_tree_dict] = None,
         parts: Optional[List[str]] = None,
-        common=False,
+        common: bool = False,
     ):
         if parts is None:
             parts = []
@@ -383,10 +388,9 @@ class FileTree:
 
             if isinstance(v, dict):
                 yield from self._files_list(v)
-            elif isinstance(v, list):
-                yield v
             else:
-                assert False
+                assert isinstance(v, list)
+                yield v
 
     def __get_prefixed(
         self,
@@ -468,7 +472,7 @@ DEFAULT_PACKAGES_EXT = ('.apk', '.jar', '.apex')
 
 class SimpleFileList:
     def __init__(self):
-        self.__files = {}
+        self.__files: Dict[str, File] = {}
 
     def __bool__(self):
         return bool(self.__files)
@@ -487,7 +491,7 @@ class FileList:
     def __init__(
         self,
         section: Optional[str] = None,
-        check_elf=False,
+        check_elf: bool = False,
     ):
         # These are filtered by section
         self.files = SimpleFileList()
