@@ -19,6 +19,7 @@ from extract_utils.elf import (
 )
 from extract_utils.elf_parser import EM
 from extract_utils.file import (
+    VINTF_PARTS,
     CommonFileTree,
     File,
     FileArgs,
@@ -341,7 +342,7 @@ def write_bin_package(
 
 
 def write_rfsa_package(file: File, builder: FileBpBuilder):
-    _, package_name = file_stem_package_name(file, can_have_stem=True)
+    package_name = file.dst.replace('/', '_').replace('.', '_')
 
     (
         builder.set_rule_name('prebuilt_rfsa')
@@ -408,7 +409,7 @@ def write_framework_package(file: File, builder: FileBpBuilder):
 
 
 def write_etc_package(file: File, builder: FileBpBuilder):
-    if file.ext == '.xml':
+    if file.ext == '.xml' or file.contains_path_parts(VINTF_PARTS):
         rule_name = 'prebuilt_etc_xml'
     else:
         rule_name = 'prebuilt_etc'
@@ -638,6 +639,8 @@ def write_symlink_package(
     encoder: JSONEncoder,
 ):
     symlink_target = f'/{file.dst}'
+    if '/' not in symlink:
+        symlink = f'{os.path.dirname(file.dst)}/{symlink}'
     part, location = symlink.split('/', 1)
     package_name = symlink.replace('/', '_').replace('.', '_')
 
